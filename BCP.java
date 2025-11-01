@@ -14,6 +14,7 @@ public class BCP {
     public int baseCodigo = -1;
     public int limiteCodigo = -1;
     public int baseDatos = -1;
+    public int limiteDatos = -1;
 
     public void reiniciar() {
         idProceso = -1;

@@ -17,6 +17,9 @@ public class Memoria {
     private final List<String> celdas;
     private String mensajeEstado = "";
 
+    // 🆕 Tamaño de página (para memoria virtual)
+    public int tamanoPagina = 8;
+
     public Memoria(int tamano, int tamanoSO) {
         this.tamano = tamano;
         this.tamanoSO = tamanoSO;
@@ -61,5 +64,18 @@ public class Memoria {
 
     public void asignarMensaje(String msg) { this.mensajeEstado = msg; }
     public String obtenerMensaje() { return mensajeEstado; }
-}
 
+    // Utilidad para memoria virtual dinámica: total de páginas disponibles
+    public int getTotalPaginas() {
+        return (int) Math.ceil((tamano - tamanoSO) / (double) tamanoPagina);
+    }
+
+    // Devuelve las direcciones base de cada página (útil para crear tabla de páginas)
+    public List<Integer> getBasesDePaginas() {
+        List<Integer> paginas = new ArrayList<>();
+        for (int i = tamanoSO; i < tamano; i += tamanoPagina) {
+            paginas.add(i);
+        }
+        return paginas;
+    }
+}

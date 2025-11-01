@@ -47,6 +47,8 @@ public class VentanaSimulador extends JFrame {
 
     private final DefaultTableModel modeloInstrucciones = new DefaultTableModel(new Object[]{"Instrucción", "Binario"}, 0);
     private final JTable tablaInstrucciones = new JTable(modeloInstrucciones);
+    
+    //private final List<int[]> huecosLibres = new ArrayList<>();
 
     private final JLabel lblEstado = new JLabel("Sin programa");
     private final JLabel lblPC = new JLabel("0");
@@ -78,6 +80,24 @@ public class VentanaSimulador extends JFrame {
     private final JButton btnEstadisticas = new JButton("Estadísticas");
     JButton btnEstados = new JButton("Ver estados");
     
+    // Selector de modo de memoria
+    private final JComboBox<String> cbTipoMemoria =
+        new JComboBox<>(new String[]{
+                "Seleccione el Tipo de Memoria",
+                "Memoria Física con Segmentación",
+                "Memoria Física con Dinámica",
+                "Memoria Virtual con Dinámica"
+        });
+    
+    private String modoMemoria = "NINGUNO";  // valor por defecto
+    private List<int[]> huecosLibres = new ArrayList<>();
+    private final java.util.List<Integer> marcosLibres = new ArrayList<>();
+    private final java.util.Map<Integer, Integer> tablaPaginas = new HashMap<>(); // numPagina -> marco
+    private int tamañoPagina = 16; // Tamaño de página (en celdas)
+    private final java.util.Map<Integer, String> swapSpace = new HashMap<>(); // Simulación de swap
+    //private String modoMemoria = "Seleccionar Modo de Memoria"; // Valor por defecto
+    
+    
     private Temporizador temporizador;
 
     private Instruccion instruccionActual = null;
@@ -88,22 +108,35 @@ public class VentanaSimulador extends JFrame {
     
     private static final Map<String,Integer> DURACIONES = new HashMap<>();
     static {
-        DURACIONES.put("LOAD", 2);
-        DURACIONES.put("STORE", 2);
+        DURACIONES.put("LOAD", 1);
+        DURACIONES.put("STORE", 1);
         DURACIONES.put("MOV", 1);
-        DURACIONES.put("ADD", 3);
-        DURACIONES.put("SUB", 3);
+        DURACIONES.put("ADD", 1);
+        DURACIONES.put("SUB", 1);
         DURACIONES.put("INC", 1);
         DURACIONES.put("DEC", 1);
         DURACIONES.put("SWAP", 1);
-        DURACIONES.put("INT", 2);
-        DURACIONES.put("JMP", 2);
-        DURACIONES.put("CMP", 2);
-        DURACIONES.put("JE", 2);
-        DURACIONES.put("JNE", 2);
-        DURACIONES.put("PARAM", 3);
+        DURACIONES.put("INT", 1);
+        DURACIONES.put("JMP", 1);
+        DURACIONES.put("CMP", 1);
+        DURACIONES.put("JE", 1);
+        DURACIONES.put("JNE", 1);
+        DURACIONES.put("PARAM", 1);
         DURACIONES.put("PUSH", 1);
         DURACIONES.put("POP", 1);
+    }
+    
+    // Clase interna para representar un segmento en memoria
+    private static class Segmento {
+        String tipo; // "Código" o "Datos"
+        int base;
+        int limite;
+
+        Segmento(String tipo, int base, int limite) {
+            this.tipo = tipo;
+            this.base = base;
+            this.limite = limite;
+        }
     }
 
     public VentanaSimulador() {
@@ -111,11 +144,18 @@ public class VentanaSimulador extends JFrame {
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setMinimumSize(new Dimension(1200, 650));
         setLocationRelativeTo(null);
+        
+        // Inicializar lista de espacios libres para memoria dinámica
+        huecosLibres.clear();
+        huecosLibres.add(new int[]{memoria.tamanoSO, memoria.tamano - 1});
+
 
         tablaMemoria.setFillsViewportHeight(true);
         tablaMemoria.setDefaultRenderer(Object.class, new RenderizadorMemoria(memoria, () -> obtenerPCAbsoluto()));
 
         JPanel barraSuperior = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        barraSuperior.add(new JLabel("Tipo de Memoria:"));
+        barraSuperior.add(cbTipoMemoria);
         barraSuperior.add(new JLabel("Memoria:"));
         barraSuperior.add(spTamMemoria);
         barraSuperior.add(new JLabel("SO:"));
@@ -129,6 +169,59 @@ public class VentanaSimulador extends JFrame {
         barraSuperior.add(btnLimpiar);
         barraSuperior.add(btnEstadisticas);
         barraSuperior.add(btnEstados);
+        
+        /*barraSuperior.add(new JLabel("Modo:"));
+        barraSuperior.add(cmbModoMemoria);
+
+        cmbModoMemoria.addActionListener(e -> {
+            modoMemoria = (String) cmbModoMemoria.getSelectedItem();
+            lblEstado.setText("Modo seleccionado: " + modoMemoria);
+            onCambioModoMemoria(modoMemoria);
+        });*/
+        
+        cbTipoMemoria.addActionListener(e -> {
+            String seleccion = (String) cbTipoMemoria.getSelectedItem();
+            if (seleccion == null) return;
+
+            switch (seleccion) {
+                case "Memoria Física con Segmentación" -> {
+                    modoMemoria = "SEGMENTACION";
+                    lblEstado.setText("Modo de memoria cambiado a: Segmentación");
+                }
+
+                case "Memoria Física con Dinámica" -> {
+                    modoMemoria = "DINAMICA";
+                    huecosLibres.clear();
+                    huecosLibres.add(new int[]{memoria.tamanoSO, memoria.tamano - 1});
+                    lblEstado.setText("Modo de memoria cambiado a: Dinámica");
+                }
+
+                case "Memoria Virtual con Dinámica" -> {
+                    modoMemoria = "VIRTUAL";
+                    marcosLibres.clear();
+                    tablaPaginas.clear();
+                    swapSpace.clear();
+
+                    // Inicializamos marcos libres según el tamaño de página
+                    for (int i = memoria.tamanoSO; i < memoria.tamano; i += tamañoPagina) {
+                        marcosLibres.add(i);
+                    }
+
+                    lblEstado.setText("Modo de memoria cambiado a: Virtual con Dinámica (páginas de "
+                            + tamañoPagina + " celdas, marcos libres: " + marcosLibres.size() + ")");
+                    JOptionPane.showMessageDialog(this,
+                            "Modo activado: Memoria Virtual con Dinámica\n" +
+                                    "Tamaño de página: " + tamañoPagina + " celdas\n" +
+                                    "Marcos libres iniciales: " + marcosLibres.size(),
+                            "Memoria Virtual", JOptionPane.INFORMATION_MESSAGE);
+                }
+
+                default -> {
+                    modoMemoria = "NINGUNO";
+                    lblEstado.setText("No se ha seleccionado ningún modo de memoria.");
+                }
+            }
+        });
 
         JPanel panelCPU = construirPanelCPU();
         JPanel panelBCP = construirPanelBCP();
@@ -170,8 +263,28 @@ public class VentanaSimulador extends JFrame {
 
         btnCargar.addActionListener(e -> cargarDesdeChooser());
         btnRecargar.addActionListener(e -> recargarUltimoArchivo());
-        btnPaso.addActionListener(e -> ejecutarPaso());
-        btnEjecutar.addActionListener(e -> temporizador.iniciar());
+        btnPaso.addActionListener(e -> {
+            if (modoMemoria.equals("NINGUNO")) {
+                JOptionPane.showMessageDialog(this,
+                        "Debe seleccionar un tipo de memoria antes de ejecutar paso a paso.",
+                        "Modo de memoria no seleccionado",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            ejecutarPaso();
+        });
+
+        btnEjecutar.addActionListener(e -> {
+            if (modoMemoria.equals("NINGUNO")) {
+                JOptionPane.showMessageDialog(this,
+                        "Debe seleccionar un tipo de memoria antes de ejecutar el programa.",
+                        "Modo de memoria no seleccionado",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            temporizador.iniciar();
+        });
+
         btnDetener.addActionListener(e -> temporizador.detener());
         btnLimpiar.addActionListener(e -> limpiarTodo());
         btnEstados.addActionListener(e -> mostrarEstadosBCP());
@@ -278,40 +391,155 @@ public class VentanaSimulador extends JFrame {
     private void cargarEnMemoria(Proceso p) {
         Programa cargado = p.programa;
 
-        // asignar base en la proximaDireccionLibre
-        int baseCodigo = proximaDireccionLibre;
-        int baseDatos = baseCodigo + cargado.longitud();
-        if (baseDatos >= memoria.tamano) {
-            // No hay espacio contiguo en memoria 
-            JOptionPane.showMessageDialog(this, "No hay espacio en memoria para cargar el proceso en memoria.", "Memoria llena", JOptionPane.ERROR_MESSAGE);
-            // poner en espera
-            p.bcp.cambiarEstado(EstadoProceso.ESPERA);
-            colaEspera.add(p);
-            return;
+        switch (modoMemoria.toUpperCase()) {
+            // ======================================================
+            // MEMORIA FÍSICA CON SEGMENTACIÓN
+            // ======================================================
+            case "SEGMENTACION" -> {
+                int baseCodigo = proximaDireccionLibre;
+                int limiteCodigo = baseCodigo + cargado.longitud() - 1;
+
+                int tamañoSegmentoDatos = 8; // tamaño fijo para datos
+                int baseDatos = limiteCodigo + 1;
+                int limiteDatos = baseDatos + tamañoSegmentoDatos - 1;
+
+                if (limiteDatos >= memoria.tamano) {
+                    JOptionPane.showMessageDialog(this,
+                            "No hay espacio suficiente en memoria para cargar el proceso.",
+                            "Error de memoria", JOptionPane.ERROR_MESSAGE);
+                    p.bcp.cambiarEstado(EstadoProceso.ESPERA);
+                    colaEspera.add(p);
+                    return;
+                }
+
+                // Cargar instrucciones
+                for (int i = 0; i < cargado.longitud(); i++) {
+                    memoria.asignarCelda(baseCodigo + i, cargado.lineaOriginal(i));
+                }
+
+                // Configurar BCP
+                p.bcp.baseCodigo = baseCodigo;
+                p.bcp.limiteCodigo = limiteCodigo;
+                p.bcp.baseDatos = baseDatos;
+                p.bcp.limiteDatos = limiteDatos;
+                p.bcp.cambiarEstado(EstadoProceso.LISTO);
+
+                // Enlazar
+                if (cabeza == null) cabeza = p;
+                else cola.siguiente = p;
+                cola = p;
+
+                proximaDireccionLibre = limiteDatos + 1;
+                contProgramas++;
+            }
+
+            // ======================================================
+            // MEMORIA FÍSICA CON DINÁMICA (FIRST-FIT)
+            // ======================================================
+            case "DINAMICA" -> {
+                int tamanoProceso = cargado.longitud() + 8; // código + datos
+                int baseAsignada = -1;
+
+                // Buscar hueco libre
+                for (int i = 0; i < huecosLibres.size(); i++) {
+                    int[] hueco = huecosLibres.get(i);
+                    int inicio = hueco[0];
+                    int fin = hueco[1];
+                    int tamanoHueco = fin - inicio + 1;
+
+                    if (tamanoHueco >= tamanoProceso) {
+                        baseAsignada = inicio;
+                        int nuevoInicio = inicio + tamanoProceso;
+                        huecosLibres.remove(i);
+                        if (nuevoInicio <= fin) huecosLibres.add(i, new int[]{nuevoInicio, fin});
+                        break;
+                    }
+                }
+
+                if (baseAsignada == -1) {
+                    JOptionPane.showMessageDialog(this,
+                            "No hay espacio disponible para este proceso (modo dinámico).",
+                            "Memoria llena", JOptionPane.WARNING_MESSAGE);
+                    p.bcp.cambiarEstado(EstadoProceso.ESPERA);
+                    colaEspera.add(p);
+                    return;
+                }
+
+                int baseCodigo = baseAsignada;
+                int limiteCodigo = baseCodigo + cargado.longitud() - 1;
+                int baseDatos = limiteCodigo + 1;
+                int limiteDatos = baseDatos + 7;
+
+                for (int i = 0; i < cargado.longitud(); i++) {
+                    memoria.asignarCelda(baseCodigo + i, cargado.lineaOriginal(i));
+                }
+
+                p.bcp.baseCodigo = baseCodigo;
+                p.bcp.limiteCodigo = limiteCodigo;
+                p.bcp.baseDatos = baseDatos;
+                p.bcp.limiteDatos = limiteDatos;
+                p.bcp.cambiarEstado(EstadoProceso.LISTO);
+
+                if (cabeza == null) cabeza = p;
+                else cola.siguiente = p;
+                cola = p;
+                contProgramas++;
+            }
+
+            // ======================================================
+            // MEMORIA VIRTUAL CON DINÁMICA (PAGINACIÓN)
+            // ======================================================
+            case "VIRTUAL" -> {
+                int tamanoPagina = memoria.tamanoPagina;
+                int totalPaginas = memoria.getTotalPaginas();
+
+                // Cuántas páginas requiere este proceso
+                int paginasRequeridas = (int) Math.ceil((cargado.longitud() + 8) / (double) tamanoPagina);
+
+                if (paginasRequeridas > totalPaginas) {
+                    JOptionPane.showMessageDialog(this,
+                            "No hay suficientes páginas disponibles para el proceso.",
+                            "Memoria virtual insuficiente", JOptionPane.ERROR_MESSAGE);
+                    p.bcp.cambiarEstado(EstadoProceso.ESPERA);
+                    colaEspera.add(p);
+                    return;
+                }
+
+                // Crear tabla de páginas (asignación dinámica)
+                p.tablaPaginas = new HashMap<>();
+                List<Integer> basesPaginas = memoria.getBasesDePaginas();
+                int paginasAsignadas = 0;
+
+                for (int base : basesPaginas) {
+                    if (paginasAsignadas >= paginasRequeridas) break;
+                    p.tablaPaginas.put(paginasAsignadas, base);
+                    paginasAsignadas++;
+                }
+
+                // Cargar instrucciones en las páginas virtuales
+                int instrIndex = 0;
+                for (int pag = 0; pag < paginasAsignadas; pag++) {
+                    int basePag = p.tablaPaginas.get(pag);
+                    for (int offset = 0; offset < tamanoPagina && instrIndex < cargado.longitud(); offset++) {
+                        memoria.asignarCelda(basePag + offset, cargado.lineaOriginal(instrIndex++));
+                    }
+                }
+
+                // Configurar BCP
+                p.bcp.baseCodigo = 0; // direcciones lógicas
+                p.bcp.limiteCodigo = cargado.longitud() - 1;
+                p.bcp.baseDatos = cargado.longitud();
+                p.bcp.limiteDatos = p.bcp.baseDatos + 7;
+                p.bcp.cambiarEstado(EstadoProceso.LISTO);
+
+                if (cabeza == null) cabeza = p;
+                else cola.siguiente = p;
+                cola = p;
+                contProgramas++;
+            }
+
+            default -> JOptionPane.showMessageDialog(this, "Modo de memoria no reconocido: " + modoMemoria);
         }
-
-        // Escribir programa en memoria
-        for (int i = 0; i < cargado.longitud(); i++) {
-            memoria.asignarCelda(baseCodigo + i, cargado.lineaOriginal(i));
-        }
-
-        // completar BCP con direcciones reales
-        p.bcp.baseCodigo = baseCodigo;
-        p.bcp.limiteCodigo = baseCodigo + cargado.longitud() - 1;
-        p.bcp.baseDatos = baseDatos;
-        p.bcp.cambiarEstado(EstadoProceso.LISTO);
-
-        // Encadenar en la lista enlazada (al final)
-        if (cabeza == null) {
-            cabeza = p;
-            cola = p;
-        } else {
-            cola.siguiente = p;
-            cola = p;
-        }
-
-        proximaDireccionLibre = baseDatos; // avanzar el puntero
-        contProgramas++;
 
         modeloMemoria.fireTableDataChanged();
     }
@@ -531,23 +759,144 @@ public class VentanaSimulador extends JFrame {
         try {
             switch (op) {
                 case "MOV" -> {
-                    int val = obtenerValorOperando(args.get(1));
-                    cpu.asignarRegistro(args.get(0), val);
+                    String destino = args.get(0);
+                    String origen = args.get(1);
+
+                    // MOV REG, REG o MOV REG, INMEDIATO
+                    if (cpu.registros.containsKey(destino)) {
+                        int valor = origen.matches("[-+]?[0-9]+")
+                                ? Integer.parseInt(origen)
+                                : cpu.obtenerRegistro(origen);
+                        cpu.asignarRegistro(destino, valor);
+                    }
+
+                    // MOV [n], REG, escritura en memoria
+                    else if (destino.startsWith("[")) {
+                        int desplazamiento = Integer.parseInt(destino.replaceAll("[\\[\\]]", ""));
+                        int direccion = -1;
+
+                        switch (modoMemoria.toUpperCase()) {
+                            // SEGMENTACIÓN
+                            case "SEGMENTACION" -> {
+                                direccion = procesoActual.bcp.baseDatos + desplazamiento;
+                                if (direccion < procesoActual.bcp.baseDatos || direccion > procesoActual.bcp.limiteDatos)
+                                    throw new RuntimeException("Violación de segmento en MOV");
+                            }
+
+                            // DINÁMICA
+                            case "DINAMICA" -> {
+                                direccion = procesoActual.bcp.baseCodigo + desplazamiento;
+                                if (direccion < procesoActual.bcp.baseCodigo || direccion > procesoActual.bcp.limiteCodigo)
+                                    throw new RuntimeException("Violación de bloque dinámico en MOV");
+                            }
+
+                            // VIRTUAL (paginación)
+                            case "VIRTUAL" -> {
+                                int tamanoPagina = memoria.tamanoPagina;
+                                int pagina = desplazamiento / tamanoPagina;
+                                int offset = desplazamiento % tamanoPagina;
+
+                                Integer basePagina = procesoActual.tablaPaginas.get(pagina);
+                                if (basePagina == null)
+                                    throw new RuntimeException("Fallo de página en MOV (página no asignada)");
+
+                                direccion = basePagina + offset;
+                            }
+
+                            default -> throw new RuntimeException("Modo de memoria no reconocido: " + modoMemoria);
+                        }
+
+                        String valor = String.valueOf(cpu.obtenerRegistro(origen));
+                        memoria.asignarCelda(direccion, valor);
+                        procesoActual.bcp.ultimoResultado = "Dir " + direccion + " = " + valor;
+                    } else {
+                        throw new RuntimeException("Sintaxis de MOV no válida: " + destino + ", " + origen);
+                    }
                 }
 
+
                 case "LOAD" -> {
-                    cpu.AC = cpu.obtenerRegistro(args.get(0));
+                    String reg = args.get(0);
+                    int desplazamiento = cpu.obtenerRegistro(reg);
+                    int direccion = -1;
+
+                    switch (modoMemoria.toUpperCase()) {
+                        case "SEGMENTACION" -> {
+                            direccion = procesoActual.bcp.baseDatos + desplazamiento;
+                            if (direccion < procesoActual.bcp.baseDatos || direccion > procesoActual.bcp.limiteDatos)
+                                throw new RuntimeException("Violación de segmento de datos en LOAD");
+                        }
+
+                        case "DINAMICA" -> {
+                            direccion = procesoActual.bcp.baseCodigo + desplazamiento;
+                            if (direccion < procesoActual.bcp.baseCodigo || direccion > procesoActual.bcp.limiteCodigo)
+                                throw new RuntimeException("Violación de bloque dinámico en LOAD");
+                        }
+
+                        case "VIRTUAL" -> {
+                            int tamanoPagina = memoria.tamanoPagina;
+                            int pagina = desplazamiento / tamanoPagina;
+                            int offset = desplazamiento % tamanoPagina;
+
+                            Integer basePagina = procesoActual.tablaPaginas.get(pagina);
+                            if (basePagina == null)
+                                throw new RuntimeException("Fallo de página en LOAD (página no asignada)");
+
+                            direccion = basePagina + offset;
+                        }
+
+                        default -> throw new RuntimeException("Modo de memoria no reconocido: " + modoMemoria);
+                    }
+
+                    String valor = memoria.obtenerRaw(direccion);
+                    try {
+                        cpu.AC = Integer.parseInt(valor.trim());
+                    } catch (Exception e) {
+                        cpu.AC = 0;
+                    }
                     cpu.ZF = (cpu.AC == 0);
                 }
 
+
                 case "STORE" -> {
-                    int direccion = procesoActual.bcp.baseDatos + cpu.obtenerRegistro(args.get(0));
+                    int desplazamiento = cpu.obtenerRegistro(args.get(0));
+                    int direccion = -1;
+
+                    switch (modoMemoria.toUpperCase()) {
+                        case "SEGMENTACION" -> {
+                            direccion = procesoActual.bcp.baseDatos + desplazamiento;
+                            if (direccion < procesoActual.bcp.baseDatos || direccion > procesoActual.bcp.limiteDatos)
+                                throw new RuntimeException("Violación de segmento de datos en STORE");
+                        }
+
+                        case "DINAMICA" -> {
+                            direccion = procesoActual.bcp.baseCodigo + desplazamiento;
+                            if (direccion < procesoActual.bcp.baseCodigo || direccion > procesoActual.bcp.limiteCodigo)
+                                throw new RuntimeException("Violación de bloque dinámico en STORE");
+                        }
+
+                        case "VIRTUAL" -> {
+                            int tamanoPagina = memoria.tamanoPagina;
+                            int pagina = desplazamiento / tamanoPagina;
+                            int offset = desplazamiento % tamanoPagina;
+
+                            Integer basePagina = procesoActual.tablaPaginas.get(pagina);
+                            if (basePagina == null)
+                                throw new RuntimeException("Fallo de página en STORE (página no asignada)");
+
+                            direccion = basePagina + offset;
+                        }
+
+                        default -> throw new RuntimeException("Modo de memoria no reconocido: " + modoMemoria);
+                    }
+
                     String valor = String.valueOf(cpu.AC);
                     memoria.asignarCelda(direccion, valor);
-
-                    // Guardamos en el BCP
-                    procesoActual.bcp.ultimoResultado = "Dir " + direccion + " = " + valor;
+                    procesoActual.bcp.ultimoResultado = "STORE -> Dir " + direccion + " = " + valor;
                 }
+
+
+
 
                 case "ADD" -> {
                     cpu.AC += cpu.obtenerRegistro(args.get(0));
@@ -821,6 +1170,17 @@ public class VentanaSimulador extends JFrame {
     
     public BCP getBcp() {
         return bcp;
+    }
+    
+    private void onCambioModoMemoria(String modo) {
+        switch (modo) {
+            case "Memoria Física con Segmentación" ->
+                System.out.println("Modo Segmentación activado.");
+            case "Memoria Física Dinámica" ->
+                System.out.println("Modo Dinámico activado.");
+            case "Memoria Virtual Dinámica" ->
+                System.out.println("Modo Virtual activado.");
+        }
     }
 
 }

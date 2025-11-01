@@ -9,6 +9,8 @@ package com.mycompany.minipc;
  * @author Keingell
  */
 import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 
 class Proceso {
     int pid;
@@ -16,6 +18,9 @@ class Proceso {
     BCP bcp;
     File archivo;
     Proceso siguiente; // apunta al siguiente proceso en la lista
+
+    // Tabla de páginas para Memoria Virtual con Dinámica
+    public Map<Integer, Integer> tablaPaginas = new HashMap<>();
 
     public Proceso(int pid, Programa programa, BCP bcp, File archivo) {
         this.pid = pid;
