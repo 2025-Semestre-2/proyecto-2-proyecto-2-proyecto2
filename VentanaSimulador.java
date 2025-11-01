@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
+import java.util.PriorityQueue;
+import java.util.Comparator;
 
 public class VentanaSimulador extends JFrame {
 
@@ -36,6 +38,8 @@ public class VentanaSimulador extends JFrame {
     private int contProgramas = 0;
     private final Queue<Proceso> colaEspera = new LinkedList<>();
     private final List<File> archivosSeleccionados = new ArrayList<>();
+    private int tamanoPagina = 8;  // Cada página tiene 8 celdas físicas
+    private final List<Integer> marcosLibres = new ArrayList<>(); // Lista de marcos disponibles
     
     private Proceso cabeza = null;        // primer proceso cargado
     private Proceso cola = null;          // último proceso (para ir encadenando)
@@ -72,6 +76,7 @@ public class VentanaSimulador extends JFrame {
 
     private final JButton btnAsignarMemoria = new JButton("Asignar Memoria");
     private final JButton btnCargar = new JButton("Cargar .asm");
+    JButton btnLlegadas = new JButton("Asignar tiempos");
     private final JButton btnRecargar = new JButton("Recargar");
     private final JButton btnPaso = new JButton("Paso a paso");
     private final JButton btnEjecutar = new JButton("Ejecutar");
@@ -91,8 +96,8 @@ public class VentanaSimulador extends JFrame {
     
     private String modoMemoria = "NINGUNO";  // valor por defecto
     private List<int[]> huecosLibres = new ArrayList<>();
-    private final java.util.List<Integer> marcosLibres = new ArrayList<>();
-    private final java.util.Map<Integer, Integer> tablaPaginas = new HashMap<>(); // numPagina -> marco
+    //private final java.util.List<Integer> marcosLibres = new ArrayList<>();
+    private final java.util.Map<Integer, Integer> tablaPaginas = new HashMap<>(); // numPagina a marco
     private int tamañoPagina = 16; // Tamaño de página (en celdas)
     private final java.util.Map<Integer, String> swapSpace = new HashMap<>(); // Simulación de swap
     //private String modoMemoria = "Seleccionar Modo de Memoria"; // Valor por defecto
@@ -106,6 +111,15 @@ public class VentanaSimulador extends JFrame {
     private final java.util.List<Estadistica> estadisticas = new ArrayList<>();
     private Estadistica estadisticaActual = null;
     
+    private final JComboBox<String> cbPlanificacion = new JComboBox<>(new String[] {"FCFS", "SRT"});
+    //private final JLabel lblModoPlanificacion = new JLabel("Planificación: FCFS");
+    
+    private String modoPlanificacion = "FCFS";
+    private int tiempoGlobal = 0;
+    private final List<Proceso> listaProcesos = new ArrayList<>();
+    private final PriorityQueue<Proceso> colaListosSRT =
+            new PriorityQueue<>(Comparator.comparingInt(p -> p.bcp.rafagaRestante));
+
     private static final Map<String,Integer> DURACIONES = new HashMap<>();
     static {
         DURACIONES.put("LOAD", 1);
@@ -128,7 +142,7 @@ public class VentanaSimulador extends JFrame {
     
     // Clase interna para representar un segmento en memoria
     private static class Segmento {
-        String tipo; // "Código" o "Datos"
+        String tipo;
         int base;
         int limite;
 
@@ -154,8 +168,13 @@ public class VentanaSimulador extends JFrame {
         tablaMemoria.setDefaultRenderer(Object.class, new RenderizadorMemoria(memoria, () -> obtenerPCAbsoluto()));
 
         JPanel barraSuperior = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        barraSuperior.add(new JLabel("Tipo de Memoria:"));
+        //barraSuperior.add(new JLabel("Tipo de Memoria:"));
         barraSuperior.add(cbTipoMemoria);
+        //barraSuperior.add(new JLabel("Planificación:"));
+        barraSuperior.add(cbPlanificacion);
+        //barraSuperior.add(lblModoPlanificacion);
+        barraSuperior.add(btnLlegadas);
+        btnLlegadas.addActionListener(e -> asignarTiemposDeLlegada());
         barraSuperior.add(new JLabel("Memoria:"));
         barraSuperior.add(spTamMemoria);
         barraSuperior.add(new JLabel("SO:"));
@@ -222,7 +241,18 @@ public class VentanaSimulador extends JFrame {
                 }
             }
         });
+        
+        cbPlanificacion.addActionListener(e -> {
+            String seleccion = (String) cbPlanificacion.getSelectedItem();
+            if (seleccion.contains("SRT")) {
+                modoPlanificacion = "SRT";
+            } else {
+                modoPlanificacion = "FCFS";
+            }
+            lblEstado.setText("Planificador seleccionado: " + modoPlanificacion);
 
+        });
+        
         JPanel panelCPU = construirPanelCPU();
         JPanel panelBCP = construirPanelBCP();
 
@@ -259,7 +289,18 @@ public class VentanaSimulador extends JFrame {
             memoria.redimensionar(nuevoTam, nuevoSO);
             modeloMemoria.fireTableDataChanged();
             lblEstado.setText("Memoria asignada: " + nuevoTam + " celdas (SO=" + nuevoSO + ")");
+
+            // Inicializar los marcos libres para Memoria Virtual con Dinámica
+            marcosLibres.clear();
+            for (int i = memoria.tamanoSO; i < memoria.tamano; i += tamanoPagina) {
+                marcosLibres.add(i);
+            }
+
+            // Inicializar los espacios libres para Memoria Física Dinámica
+            huecosLibres.clear();
+            huecosLibres.add(new int[]{memoria.tamanoSO, memoria.tamano - 1});
         });
+
 
         btnCargar.addActionListener(e -> cargarDesdeChooser());
         btnRecargar.addActionListener(e -> recargarUltimoArchivo());
@@ -326,20 +367,31 @@ public class VentanaSimulador extends JFrame {
 
     private void limpiarTodo() {
         cpu.reiniciar();
-        
+
         if (bcp != null) {
             bcp.cambiarEstado(EstadoProceso.TERMINADO);
         }
-        
+
         memoria.limpiarUsuario();
         contProgramas = 0;
-        
         proximaDireccionLibre = memoria.tamanoSO;
+
         modeloInstrucciones.setRowCount(0);
         modeloMemoria.fireTableDataChanged();
         actualizarVistas();
         lblEstado.setText("CPU lista para el siguiente proceso.");
+
+        // Reinicializar los marcos libres para Memoria Virtual con Dinámica
+        marcosLibres.clear();
+        for (int i = memoria.tamanoSO; i < memoria.tamano; i += tamanoPagina) {
+            marcosLibres.add(i);
+        }
+
+        // Reinicializar también los espacios libres para Memoria Física Dinámica
+        huecosLibres.clear();
+        huecosLibres.add(new int[]{memoria.tamanoSO, memoria.tamano - 1});
     }
+
 
     private void recargarUltimoArchivo() {
         if (archivosSeleccionados.isEmpty()) {
@@ -393,7 +445,7 @@ public class VentanaSimulador extends JFrame {
 
         switch (modoMemoria.toUpperCase()) {
             // ======================================================
-            // MEMORIA FÍSICA CON SEGMENTACIÓN
+            // Memoria física con segmentación
             // ======================================================
             case "SEGMENTACION" -> {
                 int baseCodigo = proximaDireccionLibre;
@@ -422,9 +474,19 @@ public class VentanaSimulador extends JFrame {
                 p.bcp.limiteCodigo = limiteCodigo;
                 p.bcp.baseDatos = baseDatos;
                 p.bcp.limiteDatos = limiteDatos;
-                p.bcp.cambiarEstado(EstadoProceso.LISTO);
+                p.bcp.cambiarEstado(EstadoProceso.NUEVO);
 
-                // Enlazar
+                // Ráfaga = cantidad de instrucciones
+                p.bcp.rafaga = cargado.longitud();
+                p.bcp.rafagaRestante = p.bcp.rafaga;
+
+                // Tiempo de llegada inicial
+                p.bcp.tiempoLlegada = listaProcesos.isEmpty() ? 0 : tiempoGlobal + listaProcesos.size();
+
+                // Registrar en lista global
+                if (!listaProcesos.contains(p)) listaProcesos.add(p);
+
+                // Enlazar a la lista de procesos
                 if (cabeza == null) cabeza = p;
                 else cola.siguiente = p;
                 cola = p;
@@ -434,13 +496,13 @@ public class VentanaSimulador extends JFrame {
             }
 
             // ======================================================
-            // MEMORIA FÍSICA CON DINÁMICA (FIRST-FIT)
+            // Memoria física con dinámica (first-fit)
             // ======================================================
             case "DINAMICA" -> {
                 int tamanoProceso = cargado.longitud() + 8; // código + datos
                 int baseAsignada = -1;
 
-                // Buscar hueco libre
+                // Buscar espacio libre
                 for (int i = 0; i < huecosLibres.size(); i++) {
                     int[] hueco = huecosLibres.get(i);
                     int inicio = hueco[0];
@@ -470,15 +532,24 @@ public class VentanaSimulador extends JFrame {
                 int baseDatos = limiteCodigo + 1;
                 int limiteDatos = baseDatos + 7;
 
+                // Cargar instrucciones
                 for (int i = 0; i < cargado.longitud(); i++) {
                     memoria.asignarCelda(baseCodigo + i, cargado.lineaOriginal(i));
                 }
 
+                // Configurar BCP
                 p.bcp.baseCodigo = baseCodigo;
                 p.bcp.limiteCodigo = limiteCodigo;
                 p.bcp.baseDatos = baseDatos;
                 p.bcp.limiteDatos = limiteDatos;
-                p.bcp.cambiarEstado(EstadoProceso.LISTO);
+                p.bcp.cambiarEstado(EstadoProceso.NUEVO);
+
+                // Ráfaga y tiempos
+                p.bcp.rafaga = cargado.longitud();
+                p.bcp.rafagaRestante = p.bcp.rafaga;
+                p.bcp.tiempoLlegada = listaProcesos.isEmpty() ? 0 : tiempoGlobal + listaProcesos.size();
+
+                if (!listaProcesos.contains(p)) listaProcesos.add(p);
 
                 if (cabeza == null) cabeza = p;
                 else cola.siguiente = p;
@@ -487,62 +558,64 @@ public class VentanaSimulador extends JFrame {
             }
 
             // ======================================================
-            // MEMORIA VIRTUAL CON DINÁMICA (PAGINACIÓN)
+            // Paginación
             // ======================================================
             case "VIRTUAL" -> {
-                int tamanoPagina = memoria.tamanoPagina;
-                int totalPaginas = memoria.getTotalPaginas();
+                int numPaginas = (int) Math.ceil((double) cargado.longitud() / tamanoPagina);
 
-                // Cuántas páginas requiere este proceso
-                int paginasRequeridas = (int) Math.ceil((cargado.longitud() + 8) / (double) tamanoPagina);
-
-                if (paginasRequeridas > totalPaginas) {
+                // Comprobamos si hay marcos suficientes
+                if (numPaginas > marcosLibres.size()) {
                     JOptionPane.showMessageDialog(this,
-                            "No hay suficientes páginas disponibles para el proceso.",
-                            "Memoria virtual insuficiente", JOptionPane.ERROR_MESSAGE);
+                            "No hay marcos libres suficientes para asignar al proceso.",
+                            "Memoria Virtual", JOptionPane.WARNING_MESSAGE);
                     p.bcp.cambiarEstado(EstadoProceso.ESPERA);
                     colaEspera.add(p);
                     return;
                 }
 
-                // Crear tabla de páginas (asignación dinámica)
-                p.tablaPaginas = new HashMap<>();
-                List<Integer> basesPaginas = memoria.getBasesDePaginas();
-                int paginasAsignadas = 0;
+                // Asignamos páginas a marcos físicos
+                for (int i = 0; i < numPaginas; i++) {
+                    int baseMarco = marcosLibres.remove(0);
+                    p.tablaPaginas.put(i, baseMarco);
 
-                for (int base : basesPaginas) {
-                    if (paginasAsignadas >= paginasRequeridas) break;
-                    p.tablaPaginas.put(paginasAsignadas, base);
-                    paginasAsignadas++;
-                }
-
-                // Cargar instrucciones en las páginas virtuales
-                int instrIndex = 0;
-                for (int pag = 0; pag < paginasAsignadas; pag++) {
-                    int basePag = p.tablaPaginas.get(pag);
-                    for (int offset = 0; offset < tamanoPagina && instrIndex < cargado.longitud(); offset++) {
-                        memoria.asignarCelda(basePag + offset, cargado.lineaOriginal(instrIndex++));
+                    // Cargamos las instrucciones de esa página en el marco
+                    for (int j = 0; j < tamanoPagina; j++) {
+                        int index = i * tamanoPagina + j;
+                        if (index < cargado.longitud()) {
+                            memoria.asignarCelda(baseMarco + j, cargado.lineaOriginal(index));
+                        } else {
+                            memoria.asignarCelda(baseMarco + j, ""); // relleno vacío
+                        }
                     }
                 }
 
-                // Configurar BCP
-                p.bcp.baseCodigo = 0; // direcciones lógicas
-                p.bcp.limiteCodigo = cargado.longitud() - 1;
-                p.bcp.baseDatos = cargado.longitud();
-                p.bcp.limiteDatos = p.bcp.baseDatos + 7;
-                p.bcp.cambiarEstado(EstadoProceso.LISTO);
+                p.bcp.baseCodigo = -1;
+                p.bcp.limiteCodigo = -1;
+                p.bcp.baseDatos = -1;
+                p.bcp.limiteDatos = -1;
+                p.bcp.cambiarEstado(EstadoProceso.NUEVO);
+
+                // Ráfaga y llegada
+                p.bcp.rafaga = cargado.longitud();
+                p.bcp.rafagaRestante = p.bcp.rafaga;
+                p.bcp.tiempoLlegada = listaProcesos.isEmpty() ? 0 : tiempoGlobal + listaProcesos.size();
+
+                if (!listaProcesos.contains(p)) listaProcesos.add(p);
 
                 if (cabeza == null) cabeza = p;
                 else cola.siguiente = p;
                 cola = p;
+
                 contProgramas++;
             }
 
-            default -> JOptionPane.showMessageDialog(this, "Modo de memoria no reconocido: " + modoMemoria);
+            default -> JOptionPane.showMessageDialog(this,
+                    "Modo de memoria no reconocido: " + modoMemoria);
         }
 
         modeloMemoria.fireTableDataChanged();
     }
+
 
     private void cargarDesdeChooser() {
         JFileChooser chooser = new JFileChooser();
@@ -640,19 +713,114 @@ public class VentanaSimulador extends JFrame {
     }
 
     private void ejecutarPaso() {
-        // Si no hay proceso actual, arrancamos desde la cabeza
+        tiempoGlobal++; // Reloj global incrementa en cada paso
+
+        // ==========================================================
+        // PLANIFICACIÓN SRT (Shortest Remaining Time First)
+        // ==========================================================
+        if (modoPlanificacion.equalsIgnoreCase("SRT")) {
+
+            // Mover procesos nuevos a la cola SRT cuando llegan
+            for (Proceso p : listaProcesos) {
+                if (p.bcp.estado == EstadoProceso.NUEVO && p.bcp.tiempoLlegada <= tiempoGlobal) {
+                    p.bcp.cambiarEstado(EstadoProceso.LISTO);
+                    colaListosSRT.offer(p);
+                }
+            }
+
+            // Si no hay proceso actual, elegir el primero con menor ráfaga restante
+            if (procesoActual == null) {
+                procesoActual = colaListosSRT.poll();
+                if (procesoActual == null) {
+                    lblEstado.setText("Esperando procesos listos (SRT)...");
+                    return;
+                }
+
+                cpu.reiniciar();
+                bcp = procesoActual.bcp;
+                bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
+                lblEstado.setText("Ejecutando (SRT): " + procesoActual.archivo.getName());
+
+                // Cargar instrucciones del proceso actual
+                modeloInstrucciones.setRowCount(0);
+                for (Instruccion inst : procesoActual.programa.instrucciones) {
+                    modeloInstrucciones.addRow(new Object[]{
+                            inst.toString(),
+                            inst.aBinario()
+                    });
+                }
+            }
+
+            // Ejecutar una instrucción
+            if (cpu.PC < procesoActual.programa.longitud()) {
+                if (instruccionActual == null) {
+                    instruccionActual = procesoActual.programa.obtener(cpu.PC);
+                    ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
+                }
+
+                ciclosPendientes--;
+
+                if (ciclosPendientes <= 0) {
+                    ejecutarInstruccion(instruccionActual);
+                    cpu.PC++;
+                    procesoActual.bcp.rafagaRestante--;
+                    instruccionActual = null;
+                }
+
+                // Si la ráfaga restante llega a 0, entonces el proceso ha terminado
+                if (procesoActual.bcp.rafagaRestante <= 0 ||
+                    cpu.estado == CPU.Estado.TERMINADO ||
+                    cpu.PC >= procesoActual.programa.longitud()) {
+
+                    procesoActual.bcp.cambiarEstado(EstadoProceso.TERMINADO);
+                    procesoActual.bcp.tiempoFinalizacion = tiempoGlobal;
+                    procesoActual.bcp.tiempoRetorno =
+                            procesoActual.bcp.tiempoFinalizacion - procesoActual.bcp.tiempoLlegada;
+                    procesoActual.bcp.tiempoEspera =
+                            procesoActual.bcp.tiempoRetorno - procesoActual.bcp.rafaga;
+
+                    registrarEstadistica();
+                    lblEstado.setText("Proceso finalizado (SRT): " + procesoActual.archivo.getName());
+                    procesoActual = null;
+                }
+            }
+
+            // Preempción: si hay otro proceso con menor ráfaga restante
+            Proceso candidato = colaListosSRT.peek();
+            if (candidato != null && procesoActual != null &&
+                candidato.bcp.rafagaRestante < procesoActual.bcp.rafagaRestante) {
+
+                // Preempción
+                procesoActual.bcp.cambiarEstado(EstadoProceso.LISTO);
+                colaListosSRT.offer(procesoActual);
+                procesoActual = colaListosSRT.poll();
+
+                cpu.reiniciar();
+                bcp = procesoActual.bcp;
+                bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
+                lblEstado.setText("Cambio de contexto (SRT): " + procesoActual.archivo.getName());
+            }
+
+            actualizarVistas();
+            modeloMemoria.fireTableDataChanged();
+            return;
+        }
+
+        // ==========================================================
+        // PLANIFICACIÓN FCFS (Primer Proyecto)
+        // ==========================================================
         if (procesoActual == null) {
             procesoActual = cabeza;
             if (procesoActual == null) {
                 lblEstado.setText("No hay programas cargados.");
                 return;
             }
+
             cpu.reiniciar();
             bcp = procesoActual.bcp;
             lblEstado.setText("Ejecutando: " + procesoActual.archivo.getName());
             estadisticaActual = new Estadistica(Integer.toString(bcp.idProceso));
-            // Mostrar instrucciones del proceso actual
-            
+
             modeloInstrucciones.setRowCount(0);
             for (Instruccion inst : procesoActual.programa.instrucciones) {
                 modeloInstrucciones.addRow(new Object[]{
@@ -660,27 +828,23 @@ public class VentanaSimulador extends JFrame {
                         inst.aBinario()
                 });
             }
-            
         }
+
         procesoActual.bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
 
-        // Si terminó este proceso → pasar al siguiente
+        // Si terminó este proceso, entonces pasa al siguiente
         if (cpu.estado == CPU.Estado.TERMINADO || cpu.PC >= procesoActual.programa.longitud()) {
-            // marcamos el proceso actual como terminado
             procesoActual.bcp.cambiarEstado(EstadoProceso.TERMINADO);
             temporizador.detener();
             registrarEstadistica();
             lblEstado.setText("Programa finalizado.");
             actualizarVistas();
 
-            // Si el proceso actual es la cabeza, la removemos de la lista enlazada
+            // Remover el proceso finalizado
             if (procesoActual == cabeza) {
                 cabeza = cabeza.siguiente;
-                
                 if (cabeza == null) cola = null;
             } else {
-                // Si en algún caso procesoActual no fuera la cabeza (por seguridad), 
-                // recorremos y eliminamos el nodo actual de la lista enlazada.
                 Proceso p = cabeza;
                 while (p != null && p.siguiente != null) {
                     if (p.siguiente == procesoActual) {
@@ -694,13 +858,10 @@ public class VentanaSimulador extends JFrame {
 
             contProgramas = Math.max(0, contProgramas - 1);
 
-            
-            // si hay procesos en cola de espera -> traer el primero a memoria
             if (!colaEspera.isEmpty()) {
                 Proceso siguienteEnEspera = colaEspera.poll();
                 cargarEnMemoria(siguienteEnEspera);
             }
-
 
             procesoActual = cabeza;
             if (procesoActual == null) {
@@ -709,7 +870,6 @@ public class VentanaSimulador extends JFrame {
                 actualizarVistas();
                 return;
             } else {
-                // Reiniciar CPU para nuevo proceso y mostrar sus instrucciones
                 cpu.reiniciar();
                 bcp = procesoActual.bcp;
                 bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
@@ -723,33 +883,34 @@ public class VentanaSimulador extends JFrame {
                     });
                 }
                 estadisticaActual = new Estadistica(Integer.toString(bcp.idProceso));
-                
                 return;
             }
         }
-        
-    if (instruccionActual == null) {
-        if (cpu.PC >= procesoActual.programa.longitud()) {
-            cpu.estado = CPU.Estado.TERMINADO;
-            registrarEstadistica();
-            lblEstado.setText("Fin del programa.");
-            return;
+
+        // Ejecución paso a paso
+        if (instruccionActual == null) {
+            if (cpu.PC >= procesoActual.programa.longitud()) {
+                cpu.estado = CPU.Estado.TERMINADO;
+                registrarEstadistica();
+                lblEstado.setText("Fin del programa.");
+                return;
+            }
+            instruccionActual = procesoActual.programa.obtener(cpu.PC);
+            ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
         }
-        instruccionActual = procesoActual.programa.obtener(cpu.PC);
-        ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
-    }
 
-    ciclosPendientes--;
+        ciclosPendientes--;
 
-    if (ciclosPendientes <= 0) {
-        ejecutarInstruccion(instruccionActual);
-        cpu.PC++;
-        instruccionActual = null;
-    }
+        if (ciclosPendientes <= 0) {
+            ejecutarInstruccion(instruccionActual);
+            cpu.PC++;
+            instruccionActual = null;
+        }
 
         actualizarVistas();
         modeloMemoria.fireTableDataChanged();
     }
+
 
 
 
@@ -1182,5 +1343,36 @@ public class VentanaSimulador extends JFrame {
                 System.out.println("Modo Virtual activado.");
         }
     }
+    
+    private void asignarTiemposDeLlegada() {
+        if (listaProcesos.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No hay procesos cargados.");
+            return;
+        }
+
+        String[] columnas = {"PID", "Nombre", "Tiempo de llegada"};
+        Object[][] datos = new Object[listaProcesos.size()][3];
+
+        for (int i = 0; i < listaProcesos.size(); i++) {
+            Proceso p = listaProcesos.get(i);
+            datos[i][0] = p.pid;
+            datos[i][1] = p.archivo.getName();
+            datos[i][2] = p.bcp.tiempoLlegada;
+        }
+
+        DefaultTableModel modelo = new DefaultTableModel(datos, columnas);
+        JTable tabla = new JTable(modelo);
+        JScrollPane scroll = new JScrollPane(tabla);
+
+        int res = JOptionPane.showConfirmDialog(this, scroll,
+                "Editar tiempos de llegada", JOptionPane.OK_CANCEL_OPTION);
+        if (res == JOptionPane.OK_OPTION) {
+            for (int i = 0; i < listaProcesos.size(); i++) {
+                int tLlegada = Integer.parseInt(modelo.getValueAt(i, 2).toString());
+                listaProcesos.get(i).bcp.tiempoLlegada = tLlegada;
+            }
+        }
+    }
+
 
 }
