@@ -102,6 +102,9 @@ public class VentanaSimulador extends JFrame {
     private final java.util.Map<Integer, String> swapSpace = new HashMap<>(); // Simulación de swap
     //private String modoMemoria = "Seleccionar Modo de Memoria"; // Valor por defecto
     
+    private final PriorityQueue<Proceso> colaListosSJF =
+        new PriorityQueue<>(Comparator.comparingInt(p -> p.bcp.rafaga));
+
     
     private Temporizador temporizador;
 
@@ -111,7 +114,16 @@ public class VentanaSimulador extends JFrame {
     private final java.util.List<Estadistica> estadisticas = new ArrayList<>();
     private Estadistica estadisticaActual = null;
     
-    private final JComboBox<String> cbPlanificacion = new JComboBox<>(new String[] {"FCFS", "SRT"});
+    private final JComboBox<String> cbPlanificacion =
+        new JComboBox<>(new String[]{
+                "FCFS",
+                "SJF",
+                "SRT",
+                "RR",
+                "HRRN"
+        });
+
+
     //private final JLabel lblModoPlanificacion = new JLabel("Planificación: FCFS");
     
     private String modoPlanificacion = "FCFS";
@@ -119,6 +131,11 @@ public class VentanaSimulador extends JFrame {
     private final List<Proceso> listaProcesos = new ArrayList<>();
     private final PriorityQueue<Proceso> colaListosSRT =
             new PriorityQueue<>(Comparator.comparingInt(p -> p.bcp.rafagaRestante));
+    
+    private final Queue<Proceso> colaListosRR = new LinkedList<>();
+    private int quantum = 3; // Round Robin de 3 en este caso
+    private int contadorQuantum = 0;
+
 
     private static final Map<String,Integer> DURACIONES = new HashMap<>();
     static {
@@ -244,13 +261,36 @@ public class VentanaSimulador extends JFrame {
         
         cbPlanificacion.addActionListener(e -> {
             String seleccion = (String) cbPlanificacion.getSelectedItem();
+
             if (seleccion.contains("SRT")) {
                 modoPlanificacion = "SRT";
+            } else if (seleccion.contains("SJF")) {
+                modoPlanificacion = "SJF";
+            } else if (seleccion.contains("HRRN")) {
+                modoPlanificacion = "HRRN";
+            } else if (seleccion.contains("RR")) {
+                modoPlanificacion = "RR";
+                contadorQuantum = 0; // reiniciar quantum cuando se elige RR
             } else {
                 modoPlanificacion = "FCFS";
             }
+
             lblEstado.setText("Planificador seleccionado: " + modoPlanificacion);
 
+            // Si el usuario selecciona RR, puedes preguntar por el quantum
+            if (modoPlanificacion.equalsIgnoreCase("RR")) {
+                String input = JOptionPane.showInputDialog(this,
+                        "Ingrese el valor de Quantum (en ciclos):", quantum);
+                try {
+                    if (input != null && !input.isEmpty()) {
+                        quantum = Integer.parseInt(input);
+                        if (quantum <= 0) quantum = 4;
+                    }
+                } catch (NumberFormatException ex) {
+                    JOptionPane.showMessageDialog(this, "Valor inválido. Se usará el quantum por defecto (4).");
+                    quantum = 4;
+                }
+            }
         });
         
         JPanel panelCPU = construirPanelCPU();
@@ -805,6 +845,253 @@ public class VentanaSimulador extends JFrame {
             modeloMemoria.fireTableDataChanged();
             return;
         }
+        
+        if (modoPlanificacion.equalsIgnoreCase("SJF")) {
+
+            // Mover procesos que ya llegaron a la cola SJF
+            for (Proceso p : listaProcesos) {
+                if (p.bcp.estado == EstadoProceso.NUEVO && p.bcp.tiempoLlegada <= tiempoGlobal) {
+                    p.bcp.cambiarEstado(EstadoProceso.LISTO);
+                    colaListosSJF.offer(p);
+                }
+            }
+
+            // Si no hay proceso en ejecución, selecciona el de menor ráfaga
+            if (procesoActual == null) {
+                procesoActual = colaListosSJF.poll();
+                if (procesoActual == null) {
+                    lblEstado.setText("Esperando procesos listos (SJF)...");
+                    return;
+                }
+
+                cpu.reiniciar();
+                bcp = procesoActual.bcp;
+                bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
+                lblEstado.setText("Ejecutando (SJF): " + procesoActual.archivo.getName());
+
+                // Cargar instrucciones del proceso actual
+                modeloInstrucciones.setRowCount(0);
+                for (Instruccion inst : procesoActual.programa.instrucciones) {
+                    modeloInstrucciones.addRow(new Object[]{
+                            inst.toString(),
+                            inst.aBinario()
+                    });
+                }
+            }
+
+            // Ejecutar paso
+            if (cpu.PC < procesoActual.programa.longitud()) {
+                if (instruccionActual == null) {
+                    instruccionActual = procesoActual.programa.obtener(cpu.PC);
+                    ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
+                }
+
+                ciclosPendientes--;
+
+                if (ciclosPendientes <= 0) {
+                    ejecutarInstruccion(instruccionActual);
+                    cpu.PC++;
+                    procesoActual.bcp.rafagaRestante--;
+                    instruccionActual = null;
+                }
+
+                // Si terminó
+                if (procesoActual.bcp.rafagaRestante <= 0 ||
+                    cpu.estado == CPU.Estado.TERMINADO ||
+                    cpu.PC >= procesoActual.programa.longitud()) {
+
+                    procesoActual.bcp.cambiarEstado(EstadoProceso.TERMINADO);
+                    procesoActual.bcp.tiempoFinalizacion = tiempoGlobal;
+                    procesoActual.bcp.tiempoRetorno =
+                            procesoActual.bcp.tiempoFinalizacion - procesoActual.bcp.tiempoLlegada;
+                    procesoActual.bcp.tiempoEspera =
+                            procesoActual.bcp.tiempoRetorno - procesoActual.bcp.rafaga;
+
+                    registrarEstadistica();
+                    lblEstado.setText("Proceso finalizado (SJF): " + procesoActual.archivo.getName());
+                    procesoActual = null; // liberar CPU
+                }
+            }
+
+            actualizarVistas();
+            modeloMemoria.fireTableDataChanged();
+            return;
+        }
+        
+        // ==========================================================
+        // PLANIFICACIÓN RR (Round Robin)
+        // ==========================================================
+        if (modoPlanificacion.equalsIgnoreCase("RR")) {
+
+            // Mover procesos nuevos a la cola RR
+            for (Proceso p : listaProcesos) {
+                if (p.bcp.estado == EstadoProceso.NUEVO && p.bcp.tiempoLlegada <= tiempoGlobal) {
+                    p.bcp.cambiarEstado(EstadoProceso.LISTO);
+                    colaListosRR.offer(p);
+                }
+            }
+
+            // Si no hay proceso actual, tomar el siguiente de la cola
+            if (procesoActual == null) {
+                procesoActual = colaListosRR.poll();
+                if (procesoActual == null) {
+                    lblEstado.setText("Esperando procesos listos (RR)...");
+                    return;
+                }
+
+                cpu.reiniciar();
+                bcp = procesoActual.bcp;
+                bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
+                contadorQuantum = quantum;
+                lblEstado.setText("Ejecutando (RR): " + procesoActual.archivo.getName());
+
+                modeloInstrucciones.setRowCount(0);
+                for (Instruccion inst : procesoActual.programa.instrucciones) {
+                    modeloInstrucciones.addRow(new Object[]{
+                            inst.toString(),
+                            inst.aBinario()
+                    });
+                }
+            }
+
+            // Ejecutar paso
+            if (cpu.PC < procesoActual.programa.longitud()) {
+                if (instruccionActual == null) {
+                    instruccionActual = procesoActual.programa.obtener(cpu.PC);
+                    ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
+                }
+
+                ciclosPendientes--;
+                contadorQuantum--;
+
+                if (ciclosPendientes <= 0) {
+                    ejecutarInstruccion(instruccionActual);
+                    cpu.PC++;
+                    procesoActual.bcp.rafagaRestante--;
+                    instruccionActual = null;
+                }
+
+                // Verificar fin de ráfaga o quantum agotado
+                if (procesoActual.bcp.rafagaRestante <= 0 ||
+                    cpu.estado == CPU.Estado.TERMINADO ||
+                    cpu.PC >= procesoActual.programa.longitud()) {
+
+                    procesoActual.bcp.cambiarEstado(EstadoProceso.TERMINADO);
+                    procesoActual.bcp.tiempoFinalizacion = tiempoGlobal;
+                    procesoActual.bcp.tiempoRetorno =
+                            procesoActual.bcp.tiempoFinalizacion - procesoActual.bcp.tiempoLlegada;
+                    procesoActual.bcp.tiempoEspera =
+                            procesoActual.bcp.tiempoRetorno - procesoActual.bcp.rafaga;
+
+                    registrarEstadistica();
+                    lblEstado.setText("Proceso finalizado (RR): " + procesoActual.archivo.getName());
+                    procesoActual = null;
+                }
+                // Quantum agotado, entonces volver a la cola
+                else if (contadorQuantum <= 0) {
+                    procesoActual.bcp.cambiarEstado(EstadoProceso.LISTO);
+                    colaListosRR.offer(procesoActual);
+                    procesoActual = null;
+                    lblEstado.setText("Cambio de contexto (RR)");
+                }
+            }
+
+            actualizarVistas();
+            modeloMemoria.fireTableDataChanged();
+            return;
+        }
+        
+        // ==========================================================
+        // PLANIFICACIÓN HRRN (Highest Response Ratio Next)
+        // ==========================================================
+        if (modoPlanificacion.equalsIgnoreCase("HRRN")) {
+            tiempoGlobal++; // avanzar el reloj global
+
+            // Mover procesos NUEVOS a la cola de LISTOS
+            for (Proceso p : listaProcesos) {
+                if (p.bcp.estado == EstadoProceso.NUEVO && p.bcp.tiempoLlegada <= tiempoGlobal) {
+                    p.bcp.cambiarEstado(EstadoProceso.LISTO);
+                }
+            }
+
+            // Si no hay proceso en ejecución → seleccionar el de mayor HRRN
+            if (procesoActual == null || procesoActual.bcp.estado == EstadoProceso.TERMINADO) {
+                double mejorRatio = -1;
+                Proceso candidato = null;
+
+                for (Proceso p : listaProcesos) {
+                    if (p.bcp.estado == EstadoProceso.LISTO) {
+                        int espera = tiempoGlobal - p.bcp.tiempoLlegada;
+                        double ratio = ((double) (espera + p.bcp.rafaga)) / p.bcp.rafaga; // fórmula HRRN
+
+                        if (ratio > mejorRatio) {
+                            mejorRatio = ratio;
+                            candidato = p;
+                        }
+                    }
+                }
+
+                if (candidato == null) {
+                    lblEstado.setText("Esperando procesos listos (HRRN)...");
+                    return;
+                }
+
+                // Asignar el proceso seleccionado
+                procesoActual = candidato;
+                procesoActual.bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
+
+                cpu.reiniciar();
+                bcp = procesoActual.bcp;
+                lblEstado.setText("Ejecutando (HRRN): " + procesoActual.archivo.getName());
+
+                // Cargar instrucciones visuales
+                modeloInstrucciones.setRowCount(0);
+                for (Instruccion inst : procesoActual.programa.instrucciones) {
+                    modeloInstrucciones.addRow(new Object[]{
+                            inst.toString(),
+                            inst.aBinario()
+                    });
+                }
+            }
+
+            // Ejecutar una instrucción
+            if (cpu.PC < procesoActual.programa.longitud()) {
+                if (instruccionActual == null) {
+                    instruccionActual = procesoActual.programa.obtener(cpu.PC);
+                    ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
+                }
+
+                ciclosPendientes--;
+
+                if (ciclosPendientes <= 0) {
+                    ejecutarInstruccion(instruccionActual);
+                    cpu.PC++;
+                    procesoActual.bcp.rafagaRestante--;
+                    instruccionActual = null;
+                }
+            }
+
+            // Si el proceso terminó, registrar estadísticas y liberar CPU
+            if (cpu.PC >= procesoActual.programa.longitud() ||
+                procesoActual.bcp.rafagaRestante <= 0 ||
+                cpu.estado == CPU.Estado.TERMINADO) {
+
+                procesoActual.bcp.cambiarEstado(EstadoProceso.TERMINADO);
+                procesoActual.bcp.tiempoFinalizacion = tiempoGlobal;
+                procesoActual.bcp.tiempoRetorno =
+                        procesoActual.bcp.tiempoFinalizacion - procesoActual.bcp.tiempoLlegada;
+                procesoActual.bcp.tiempoEspera =
+                        procesoActual.bcp.tiempoRetorno - procesoActual.bcp.rafaga;
+
+                registrarEstadistica();
+                lblEstado.setText("Proceso finalizado (HRRN): " + procesoActual.archivo.getName());
+                procesoActual = null;
+            }
+
+            actualizarVistas();
+            modeloMemoria.fireTableDataChanged();
+            return;
+        }
 
         // ==========================================================
         // PLANIFICACIÓN FCFS (Primer Proyecto)
@@ -910,9 +1197,6 @@ public class VentanaSimulador extends JFrame {
         actualizarVistas();
         modeloMemoria.fireTableDataChanged();
     }
-
-
-
 
     private void ejecutarInstruccion(Instruccion inst) {
         String op = inst.opcode;
@@ -1307,7 +1591,7 @@ public class VentanaSimulador extends JFrame {
     private void mostrarEstadosBCP() {
         // Crear tabla con los datos de todos los procesos
         String[] columnas = {"PID", "Estado", "Base Código", "Límite Código", "Base Datos"};
-        List<BCP> todos = obtenerTodosLosBCPs(); // función que recorre tu lista de procesos y retorna todos los BCP
+        List<BCP> todos = obtenerTodosLosBCPs(); // función que recorre la lista de procesos y retorna todos los BCP
 
         Object[][] datos = new Object[todos.size()][columnas.length];
         for (int i = 0; i < todos.size(); i++) {
@@ -1344,35 +1628,84 @@ public class VentanaSimulador extends JFrame {
         }
     }
     
+    /**
+    * Se usa por los algoritmos SJF, SRT y HRRN.
+    * Permite al usuario asignar o ajustar los tiempos de llegada de los procesos cargados.
+    */
     private void asignarTiemposDeLlegada() {
         if (listaProcesos.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No hay procesos cargados.");
+            JOptionPane.showMessageDialog(this, "No hay procesos cargados en memoria.", "Aviso", JOptionPane.WARNING_MESSAGE);
             return;
         }
 
-        String[] columnas = {"PID", "Nombre", "Tiempo de llegada"};
+        // Crear tabla editable los datos requeridos
+        String[] columnas = {"PID", "Nombre del proceso", "Tiempo de llegada"};
         Object[][] datos = new Object[listaProcesos.size()][3];
 
+        // Cargar los valores actuales o aumentarlos de forma automática
+        int tiempoIncremental = 0;
         for (int i = 0; i < listaProcesos.size(); i++) {
             Proceso p = listaProcesos.get(i);
             datos[i][0] = p.pid;
             datos[i][1] = p.archivo.getName();
-            datos[i][2] = p.bcp.tiempoLlegada;
+            // Si aún no tiene tiempo asignado, sugerir uno incremental
+            datos[i][2] = (p.bcp.tiempoLlegada == 0) ? tiempoIncremental : p.bcp.tiempoLlegada;
+            tiempoIncremental += 2; // Por defecto, los procesos caen en cada 2 unidades
         }
 
-        DefaultTableModel modelo = new DefaultTableModel(datos, columnas);
-        JTable tabla = new JTable(modelo);
-        JScrollPane scroll = new JScrollPane(tabla);
-
-        int res = JOptionPane.showConfirmDialog(this, scroll,
-                "Editar tiempos de llegada", JOptionPane.OK_CANCEL_OPTION);
-        if (res == JOptionPane.OK_OPTION) {
-            for (int i = 0; i < listaProcesos.size(); i++) {
-                int tLlegada = Integer.parseInt(modelo.getValueAt(i, 2).toString());
-                listaProcesos.get(i).bcp.tiempoLlegada = tLlegada;
+        DefaultTableModel modelo = new DefaultTableModel(datos, columnas) {
+            @Override
+            public boolean isCellEditable(int row, int col) {
+                return col == 2; // solo editable la columna de tiempo de llegada
             }
+        };
+
+        JTable tabla = new JTable(modelo);
+        tabla.setRowHeight(24);
+        JScrollPane scroll = new JScrollPane(tabla);
+        scroll.setPreferredSize(new Dimension(550, 250));
+
+        // Mostrar cuadro de diálogo
+        int res = JOptionPane.showConfirmDialog(this, scroll,
+                "Asignar tiempos de llegada a los procesos",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+
+        if (res == JOptionPane.OK_OPTION) {
+            // Validar y aplicar los tiempos
+            for (int i = 0; i < listaProcesos.size(); i++) {
+                try {
+                    int tLlegada = Integer.parseInt(modelo.getValueAt(i, 2).toString());
+                    if (tLlegada < 0) throw new NumberFormatException();
+
+                    Proceso p = listaProcesos.get(i);
+                    p.bcp.tiempoLlegada = tLlegada;
+
+                } catch (NumberFormatException ex) {
+                    JOptionPane.showMessageDialog(this,
+                            "Tiempo de llegada inválido en la fila " + (i + 1),
+                            "Error de entrada",
+                            JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+            }
+
+            // Mostrar resumen visual
+            StringBuilder resumen = new StringBuilder("Tiempos de llegada asignados:\n");
+            for (Proceso p : listaProcesos) {
+                resumen.append("• PID ")
+                        .append(p.pid)
+                        .append(" (")
+                        .append(p.archivo.getName())
+                        .append(") → Llegada: ")
+                        .append(p.bcp.tiempoLlegada)
+                        .append("\n");
+            }
+
+            JOptionPane.showMessageDialog(this, resumen.toString(),
+                    "Tiempos asignados correctamente", JOptionPane.INFORMATION_MESSAGE);
+
+            lblEstado.setText("Tiempos de llegada actualizados para planificación.");
         }
     }
-
-
 }
