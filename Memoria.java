@@ -50,6 +50,10 @@ public class Memoria {
     public void limpiarUsuario() {
         for (int i = tamanoSO; i < tamano; i++) celdas.set(i, "");
     }
+    
+    public void limpiarSO() {
+        for (int i = 0; i < tamanoSO; i++) celdas.set(i, "");
+    }
 
     public void marcarSO() {
         for (int i = 0; i < tamanoSO && i < tamano; i++) celdas.set(i, "<SO>");
@@ -188,6 +192,7 @@ public class Memoria {
     //============================= PAGINACION  ===================================================
     
      public void inicializarMarcos() {
+         marcosLibres.clear();
         int baseUsuario = tamanoSO;
         for (int i = baseUsuario; i < tamano; i += tamanoMarco) {
             marcosLibres.add(i); // agregamos la dirección base de cada marco

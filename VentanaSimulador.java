@@ -11,7 +11,6 @@ package com.mycompany.minipc;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.io.*;
@@ -53,7 +52,6 @@ public class VentanaSimulador extends JFrame {
     private final CPU cpu = new CPU();
     public static BCP bcp = new BCP();
     
-    private File ultimoArchivoCargado = null;
     private JTable tablaPaginacion;
     private DefaultTableModel modeloPaginacion;
     
@@ -139,8 +137,6 @@ public class VentanaSimulador extends JFrame {
     
     private Temporizador temporizador;
 
-    private Instruccion instruccionActual = null;
-    private int ciclosPendientes = 0;
     
     private final java.util.List<Estadistica> estadisticas = new ArrayList<>();
     private Estadistica estadisticaActual = null;
@@ -165,7 +161,6 @@ public class VentanaSimulador extends JFrame {
     
     private final Queue<Proceso> colaListosRR = new LinkedList<>();
     private int quantum = 3; // Round Robin de 3 en este caso
-    private int contadorQuantum = 0;
 
 
     private static final Map<String,Integer> DURACIONES = new HashMap<>();
@@ -187,19 +182,7 @@ public class VentanaSimulador extends JFrame {
         DURACIONES.put("PUSH", 1);
         DURACIONES.put("POP", 1);
     }
-    
     // Clase interna para representar un segmento en memoria
-    private static class Segmento {
-        String tipo;
-        int base;
-        int limite;
-
-        Segmento(String tipo, int base, int limite) {
-            this.tipo = tipo;
-            this.base = base;
-            this.limite = limite;
-        }
-    }
 
     public VentanaSimulador() {
         super("MiniPC - Tarea 1");
@@ -316,8 +299,9 @@ public class VentanaSimulador extends JFrame {
                     lblEstado.setText("Modo de memoria cambiado a: Virtual con Dinámica (páginas de "
                             + tamañoPagina + " celdas, marcos libres: " + marcosLibres.size() + ")");
                     JOptionPane.showMessageDialog(this,
-                            "Modo activado: Memoria Virtual con Dinámica\n" +
-                                    "Tamaño de página: " + tamañoPagina + " celdas\n" +
+                            """
+                            Modo activado: Memoria Virtual con Din\u00e1mica
+                            Tama\u00f1o de p\u00e1gina: """ + tamañoPagina + " celdas\n" +
                                     "Marcos libres iniciales: " + marcosLibres.size(),
                             "Memoria Virtual", JOptionPane.INFORMATION_MESSAGE);
                 }
@@ -340,7 +324,6 @@ public class VentanaSimulador extends JFrame {
                 modoPlanificacion = "HRRN";
             } else if (seleccion.contains("RR")) {
                 modoPlanificacion = "RR";
-                contadorQuantum = 0; // reiniciar quantum cuando se elige RR
             } else {
                 modoPlanificacion = "FCFS";
             }
@@ -514,6 +497,9 @@ public class VentanaSimulador extends JFrame {
         if (bcp != null) {
             bcp.cambiarEstado(EstadoProceso.TERMINADO);
         }
+        
+        memoria.limpiarSO();
+        listaBCP.clear();
 
         memoria.limpiarUsuario();
         contProgramas = 0;
@@ -523,6 +509,8 @@ public class VentanaSimulador extends JFrame {
         modeloMemoria.fireTableDataChanged();
         actualizarVistas();
         lblEstado.setText("CPU lista para el siguiente proceso.");
+        
+        
 
         // Reinicializar los marcos libres para Memoria Virtual con Dinámica
         marcosLibres.clear();
@@ -543,9 +531,25 @@ public class VentanaSimulador extends JFrame {
                     "Aviso", JOptionPane.WARNING_MESSAGE);
             return;
         }
+        modeloPaginacion = new DefaultTableModel(
+            new Object[]{"Proceso", "Página Lógica", "Marco Físico", "Presente"}, 0
+        );
+        
+        modeloPlanificacion.setRowCount(0);
+        for (int i = 0; i < numCores; i++) {
+            modeloPlanificacion.addRow(new Object[]{"Núcleo " + (i + 1), ""});
+        }
+        
+        tiempoGlobal = 0;
 
         limpiarTodo();
         int cargados = 0, enEspera = 0;
+        contadorProcesos = 0;
+        memoria.proximaDireccionBCP = 0;
+        proximaDireccionLibre = memoria.tamanoSO;
+        
+        memoria.inicializarParticiones();
+        memoria.inicializarMarcos();
 
         for (File archivo : archivosSeleccionados) {
             try {
@@ -554,20 +558,30 @@ public class VentanaSimulador extends JFrame {
 
                 BCP nuevoBCP = new BCP();
                 nuevoBCP.idProceso = contadorProcesos++;
+                nuevoBCP.nombre = archivo.getName();
                 nuevoBCP.cambiarEstado(EstadoProceso.NUEVO);
 
                 Proceso nuevo = new Proceso(nuevoBCP.idProceso, cargado, nuevoBCP, archivo);
-
-                if (contProgramas < 5) {
-                    cargarEnMemoria(nuevo);
-                    cargados++;
-                } else {
-                    nuevo.bcp.cambiarEstado(EstadoProceso.ESPERA);
-                    colaEspera.add(nuevo);
-                    enEspera++;
+                
+                int dirBCP = memoria.guardarBCP(nuevoBCP);
+                if (dirBCP == -1) {
+                    // No hay espacio en la zona del SO para un nuevo BCP
+                    JOptionPane.showMessageDialog(this,
+                            "No hay espacio en la memoria del SO para más BCPs. Cancele o libere procesos.",
+                            "SO lleno", JOptionPane.ERROR_MESSAGE);
+                    return;
                 }
+                
+                
+                nuevoBCP.setDirEnMemoria(dirBCP);
+                Random rand = new Random();
+                nuevoBCP.tiempoArribo = rand.nextInt(10);
+                listaBCP.add(nuevo.bcp);
+                
+                cargarEnMemoria(nuevo);
+                cargados++;
 
-            } catch (Exception ex) {
+            } catch (ExcepcionAsm | HeadlessException | IOException ex) {
                 JOptionPane.showMessageDialog(this,
                         "Error al recargar " + archivo.getName() + ":\n" + ex.getMessage(),
                         "Error", JOptionPane.ERROR_MESSAGE);
@@ -975,17 +989,12 @@ public class VentanaSimulador extends JFrame {
                 Random rand = new Random();
                 nuevoBCP.tiempoArribo = rand.nextInt(10);
                 listaBCP.add(nuevo.bcp);
-                if (contProgramas < 5) {
-                    cargarEnMemoria(nuevo);
-                    cargados++;
-                } else {
-                    nuevo.bcp.cambiarEstado(EstadoProceso.ESPERA);
-                    memoria.actualizarBCP(nuevo.bcp);
-                    colaEspera.add(nuevo);
-                    enEspera++;
-                }
+                
+                cargarEnMemoria(nuevo);
+                cargados++;
+                
 
-            } catch (Exception ex) {
+            } catch (ExcepcionAsm | HeadlessException | IOException ex) {
                 JOptionPane.showMessageDialog(this,
                         "Error al cargar " + archivos[i].getName() + ":\n" + ex.getMessage(),
                         "Error de carga", JOptionPane.ERROR_MESSAGE);
@@ -1272,9 +1281,9 @@ public class VentanaSimulador extends JFrame {
 
                             // VIRTUAL (paginación)
                             case "VIRTUAL" -> {
-                                int tamanoPagina = memoria.tamanoPagina;
-                                int pagina = desplazamiento / tamanoPagina;
-                                int offset = desplazamiento % tamanoPagina;
+                                int tamanoPagina2 = memoria.tamanoPagina;
+                                int pagina = desplazamiento / tamanoPagina2;
+                                int offset = desplazamiento % tamanoPagina2;
 
                                 Integer basePagina = procesoActual.tablaPaginas.get(pagina);
                                 if (basePagina == null)
@@ -1314,9 +1323,9 @@ public class VentanaSimulador extends JFrame {
                         }
 
                         case "VIRTUAL" -> {
-                            int tamanoPagina = memoria.tamanoPagina;
-                            int pagina = desplazamiento / tamanoPagina;
-                            int offset = desplazamiento % tamanoPagina;
+                            int tamanoPagina2 = memoria.tamanoPagina;
+                            int pagina = desplazamiento / tamanoPagina2;
+                            int offset = desplazamiento % tamanoPagina2;
 
                             Integer basePagina = procesoActual.tablaPaginas.get(pagina);
                             if (basePagina == null)
@@ -1331,7 +1340,7 @@ public class VentanaSimulador extends JFrame {
                     String valor = memoria.obtenerRaw(direccion);
                     try {
                         cpu.AC = Integer.parseInt(valor.trim());
-                    } catch (Exception e) {
+                    } catch (NumberFormatException e) {
                         cpu.AC = 0;
                     }
                     cpu.ZF = (cpu.AC == 0);
@@ -1356,9 +1365,9 @@ public class VentanaSimulador extends JFrame {
                         }
 
                         case "VIRTUAL" -> {
-                            int tamanoPagina = memoria.tamanoPagina;
-                            int pagina = desplazamiento / tamanoPagina;
-                            int offset = desplazamiento % tamanoPagina;
+                            int tamanoPagina2 = memoria.tamanoPagina;
+                            int pagina = desplazamiento / tamanoPagina2;
+                            int offset = desplazamiento % tamanoPagina2;
 
                             Integer basePagina = procesoActual.tablaPaginas.get(pagina);
                             if (basePagina == null)
@@ -1540,13 +1549,6 @@ public class VentanaSimulador extends JFrame {
 
             default -> throw new RuntimeException("INT no soportado: " + code);
         }
-    }
-
-    private int obtenerValorOperando(String token) {
-        if (cpu.registros.containsKey(token)) return cpu.obtenerRegistro(token);
-        if (token.equals("AC")) return cpu.AC;
-        if (token.matches("[-+]?[0-9]+")) return Integer.parseInt(token);
-        throw new RuntimeException("Operando inválido: " + token);
     }
 
     private void actualizarVistas() {
