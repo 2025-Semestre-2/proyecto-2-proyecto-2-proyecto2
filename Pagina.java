@@ -11,6 +11,7 @@ package com.mycompany.minipc;
 public class Pagina {
     public int numeroPagina;
     public int marcoAsignado = -1;
+    public int marcoFisico = 0;
     public boolean cargada = false;
 
     public Pagina(int numeroPagina) {

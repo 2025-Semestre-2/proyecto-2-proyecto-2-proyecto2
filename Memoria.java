@@ -64,7 +64,7 @@ public class Memoria {
     }
     
     public int guardarBCP(BCP bcp) {
-        int tamanoBCP = 10; // cada BCP usa 10 celdas
+        int tamanoBCP = 11; // cada BCP usa 10 celdas
         int finSO = tamanoSO; // límite del área del SO
         int siguiente = proximaDireccionBCP + tamanoBCP;
 
@@ -83,9 +83,10 @@ public class Memoria {
         asignarCelda(inicio + 4, "BASE_COD=" + bcp.baseCodigo);
         asignarCelda(inicio + 5, "LIM_COD=" + bcp.limiteCodigo);
         asignarCelda(inicio + 6, "BASE_DAT=" + bcp.baseDatos);
-        asignarCelda(inicio + 7, "LIM_DAT=" + bcp.limiteDatos);
+        asignarCelda(inicio + 7, "RAFAGA=" + bcp.rafaga);
         asignarCelda(inicio + 8, "PRIORIDAD=" + bcp.prioridad);
         asignarCelda(inicio + 9, "TIEMPO_CPU=" + bcp.tiempoCPU);
+        asignarCelda(inicio + 10, "TIEMPO_ARRIBO=" + bcp.tiempoArribo);
 
         bcp.dirEnMemoria = inicio;
         proximaDireccionBCP = siguiente;
@@ -102,9 +103,10 @@ public class Memoria {
         asignarCelda(base + 4, "BASE_COD=" + bcp.baseCodigo);
         asignarCelda(base + 5, "LIM_COD=" + bcp.limiteCodigo);
         asignarCelda(base + 6, "BASE_DAT=" + bcp.baseDatos);
-        asignarCelda(base + 7, "LIM_DAT=" + bcp.limiteDatos);
+        asignarCelda(base + 7, "RAFAGA=" + bcp.rafaga);
         asignarCelda(base + 8, "PRIORIDAD=" + bcp.prioridad);
         asignarCelda(base + 9, "TIEMPO_CPU=" + bcp.tiempoCPU);
+        asignarCelda(base + 10, "TIEMPO_ARRIBO=" + bcp.tiempoArribo);
     }
 
     public void asignarCelda(int idx, String valor) {

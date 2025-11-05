@@ -27,6 +27,7 @@ public class BCP {
     public int tiempoCPU = 0; 
     public String ultimoResultado = "-";
     public int dirEnMemoria = -1;
+    public int tiempoArribo;
 
     // Campos para planificación SRT
     public int tiempoLlegada = 0;
