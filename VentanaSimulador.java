@@ -29,7 +29,7 @@ import java.util.Random;
 public class VentanaSimulador extends JFrame {
     
     private static class Core {
-        public final CPU cpu = new CPU();
+        public CPU cpu = new CPU();
         public int idCore; 
         public Proceso procesoActual = null;
         public Instruccion instruccionActual = null;
@@ -52,6 +52,8 @@ public class VentanaSimulador extends JFrame {
     private final CPU cpu = new CPU();
     public static BCP bcp = new BCP();
     
+    
+    
     private JTable tablaPaginacion;
     private DefaultTableModel modeloPaginacion;
     
@@ -73,6 +75,20 @@ public class VentanaSimulador extends JFrame {
 
     private final DefaultTableModel modeloInstrucciones = new DefaultTableModel(new Object[]{"Instrucción", "Binario"}, 0);
     private final JTable tablaInstrucciones = new JTable(modeloInstrucciones);
+    
+    private JTable tablaEstadoCPU;
+    private DefaultTableModel modeloEstadoCPU;
+
+    private void inicializarTablaEstadoCPU() {
+        modeloEstadoCPU = new DefaultTableModel(
+            new Object[]{"CPU", "Núcleo", "Proceso", "Estado", "Ráfaga", "Tiempo de Arribo"}, 0
+        );
+        tablaEstadoCPU = new JTable(modeloEstadoCPU);
+        tablaEstadoCPU.setFillsViewportHeight(true);
+    }
+    
+    
+    
     
     
     
@@ -159,6 +175,9 @@ public class VentanaSimulador extends JFrame {
     private final PriorityQueue<Proceso> colaListosSRT =
             new PriorityQueue<>(Comparator.comparingInt(p -> p.bcp.rafagaRestante));
     
+    private  PriorityQueue<Proceso> colaListosSRT2 =
+            new PriorityQueue<>(Comparator.comparingInt(p -> p.bcp.rafagaRestante));
+    
     private final Queue<Proceso> colaListosRR = new LinkedList<>();
     private int quantum = 3; // Round Robin de 3 en este caso
 
@@ -186,6 +205,7 @@ public class VentanaSimulador extends JFrame {
 
     public VentanaSimulador() {
         super("MiniPC - Tarea 1");
+        inicializarTablaEstadoCPU();
         inicializarProcesadores(2);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setMinimumSize(new Dimension(1200, 650));
@@ -228,7 +248,7 @@ public class VentanaSimulador extends JFrame {
         //barraSuperior.add(new JLabel("Planificación:"));
         barraSuperior.add(cbPlanificacion);
         //barraSuperior.add(lblModoPlanificacion);
-        barraSuperior.add(btnLlegadas);
+        //barraSuperior.add(btnLlegadas);
         btnLlegadas.addActionListener(e -> asignarTiemposDeLlegada());
         barraSuperior.add(new JLabel("Memoria:"));
         barraSuperior.add(spTamMemoria);
@@ -349,10 +369,10 @@ public class VentanaSimulador extends JFrame {
         
         
         JTabbedPane pestañasDerecha = new JTabbedPane();
-        pestañasDerecha.addTab("CPU", construirPanelCPU());
-        pestañasDerecha.addTab("BCP", construirPanelBCP());
+        
         pestañasDerecha.addTab("Paginación", construirPanelPaginacion());
         pestañasDerecha.addTab("Tabla", new JScrollPane(tablaPlanificacion));
+        pestañasDerecha.addTab("Estado CPU", new JScrollPane(tablaEstadoCPU));
 
         JScrollPane scrollInstr = new JScrollPane(tablaInstrucciones);
         scrollInstr.setBorder(new TitledBorder("Instrucciones"));
@@ -407,6 +427,7 @@ public class VentanaSimulador extends JFrame {
                         JOptionPane.WARNING_MESSAGE);
                 return;
             }
+            colaListosSRT2 = colaListosSRT;
             ejecutarPaso();
         });
 
@@ -1011,7 +1032,7 @@ public class VentanaSimulador extends JFrame {
 
     private void ejecutarPaso() {
         tiempoGlobal++; // reloj global
-
+        
         // 1) Mover procesos NUEVOS a las colas de listos cuando llegue su tiempo de arribo
         for (Proceso p : listaProcesos) {
             if (p.bcp.estado == EstadoProceso.NUEVO) {
@@ -1033,6 +1054,7 @@ public class VentanaSimulador extends JFrame {
                 }
             }
         }
+        
 
         // 2) Despachar: asignar procesos en cola a cores libres
         for (Core core : cores) {
@@ -1043,20 +1065,20 @@ public class VentanaSimulador extends JFrame {
                     case "SJF" -> siguiente = colaListosSJF.poll();
                     case "RR"  -> siguiente = colaListosRR.poll();
                     case "HRRN" -> {
-                        // Buscar mejor HRRN entre LISTOS y reservarlo inmediatamente
                         double mejor = -1;
                         Proceso c = null;
                         for (Proceso p : listaProcesos) {
-                            if (p.bcp.estado == EstadoProceso.LISTO) {
-                                int espera = tiempoGlobal - p.bcp.tiempoArribo; // usar tiempoArribo
+                            if (p.bcp.estado == EstadoProceso.LISTO && p.bcp.rafaga > 0 && p.bcp.tiempoArribo <= tiempoGlobal) {
+                                int espera = tiempoGlobal - p.bcp.tiempoArribo;
                                 double ratio = ((double) (espera + p.bcp.rafaga)) / p.bcp.rafaga;
+                                System.out.println(p.bcp.nombre + " Ratio " + ratio);
                                 if (ratio > mejor) { mejor = ratio; c = p; }
                             }
                         }
                         if (c != null) {
-                            // reservarlo inmediatamente para que otro core no lo tome
-                            c.bcp.cambiarEstado(EstadoProceso.EJECUTANDO); // reserva temporal
+                            c.bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
                             memoria.actualizarBCP(c.bcp);
+                            actualizarTablaEstadoCPU();
                             siguiente = c;
                         }
                     }
@@ -1075,6 +1097,7 @@ public class VentanaSimulador extends JFrame {
                         if (primero != null) {
                             primero.bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
                             memoria.actualizarBCP(primero.bcp);
+                            actualizarTablaEstadoCPU();
                             siguiente = primero;
                         }
                     }
@@ -1102,9 +1125,11 @@ public class VentanaSimulador extends JFrame {
                     if (siguiente.bcp.estado != EstadoProceso.EJECUTANDO) {
                         siguiente.bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
                         memoria.actualizarBCP(siguiente.bcp);
+                        actualizarTablaEstadoCPU();
                     } else {
                         // ya fue marcado (HRRN), actualizar BCP por si cambio de campos
                         memoria.actualizarBCP(siguiente.bcp);
+                        actualizarTablaEstadoCPU();
                     }
 
                     // Si era la cabeza (FCFS), removerla de la lista enlazada
@@ -1125,6 +1150,7 @@ public class VentanaSimulador extends JFrame {
                 for (Core core : cores) {
                     if (core.procesoActual != null) {
                         int rem = core.procesoActual.bcp.rafagaRestante;
+                        System.out.println(candidato.bcp.nombre + " Rem " + rem);
                         if (rem > mayorRestante) { mayorRestante = rem; coreAReemplazar = core; }
                     }
                 }
@@ -1162,6 +1188,7 @@ public class VentanaSimulador extends JFrame {
                 proc.bcp.cambiarEstado(EstadoProceso.TERMINADO);
                 if(modoMemoria.toUpperCase().equals("PAGINACION")) memoria.liberarPaginas(proc.bcp);
                 memoria.actualizarBCP(proc.bcp);
+                actualizarTablaEstadoCPU();
                 proc.bcp.tiempoFinalizacion = tiempoGlobal;
                 proc.bcp.tiempoRetorno = proc.bcp.tiempoFinalizacion - proc.bcp.tiempoArribo; // usar arribo
                 proc.bcp.tiempoEspera = proc.bcp.tiempoRetorno - proc.bcp.rafaga;
@@ -1180,7 +1207,7 @@ public class VentanaSimulador extends JFrame {
             core.ciclosPendientes--;
 
             if (core.ciclosPendientes <= 0) {
-                ejecutarInstruccion(core.cpu, core.instruccionActual);
+                ejecutarInstruccion(proc,core.cpu, core.instruccionActual);
 
                 // actualizar tabla Gantt: usa fila = core.idCore-1 si tu modelo está así
                 actualizarTabla(core.idCore - 1, tiempoGlobal, proc.bcp.nombre);
@@ -1190,6 +1217,7 @@ public class VentanaSimulador extends JFrame {
                 memoria.actualizarBCP(proc.bcp);
                 proc.bcp.avanzarPC();
                 memoria.actualizarBCP(proc.bcp);
+                actualizarTablaEstadoCPU();
 
                 core.cpu.PC++;
                 proc.bcp.rafagaRestante--;
@@ -1202,6 +1230,7 @@ public class VentanaSimulador extends JFrame {
                 if (core.contadorQuantum <= 0 && core.procesoActual != null) {
                     core.procesoActual.bcp.cambiarEstado(EstadoProceso.LISTO);
                     memoria.actualizarBCP(core.procesoActual.bcp);
+                    actualizarTablaEstadoCPU();
                     colaListosRR.offer(core.procesoActual);
                     // guardar contexto en BCP si querés simulación completa:
                     // guardarContextoEnBCP(core.procesoActual.bcp, core.cpu);
@@ -1219,6 +1248,7 @@ public class VentanaSimulador extends JFrame {
                 terminado.bcp.cambiarEstado(EstadoProceso.TERMINADO);
                 if(modoMemoria.toUpperCase().equals("PAGINACION")) memoria.liberarPaginas(proc.bcp);
                 memoria.actualizarBCP(terminado.bcp);
+                actualizarTablaEstadoCPU();
                 terminado.bcp.tiempoFinalizacion = tiempoGlobal;
                 terminado.bcp.tiempoRetorno = terminado.bcp.tiempoFinalizacion - terminado.bcp.tiempoArribo;
                 terminado.bcp.tiempoEspera = terminado.bcp.tiempoRetorno - terminado.bcp.rafaga;
@@ -1240,148 +1270,36 @@ public class VentanaSimulador extends JFrame {
         modeloMemoria.fireTableDataChanged();
         actualizarTablaPaginacion();
     }
+    private int obtenerValorOperando(String token) {
+        if (cpu.registros.containsKey(token)) return cpu.obtenerRegistro(token);
+        if (token.equals("AC")) return cpu.AC;
+        if (token.matches("[-+]?[0-9]+")) return Integer.parseInt(token);
+        throw new RuntimeException("Operando inválido: " + token);
+    }
 
 
-    private void ejecutarInstruccion(CPU cpu,Instruccion inst) {
+    private void ejecutarInstruccion(Proceso procesoActual, CPU cpu,Instruccion inst) {
         String op = inst.opcode;
         List<String> args = inst.operandos;
         try {
             switch (op) {
                 case "MOV" -> {
-                    String destino = args.get(0);
-                    String origen = args.get(1);
-
-                    // MOV REG, REG o MOV REG, INMEDIATO
-                    if (cpu.registros.containsKey(destino)) {
-                        int valor = origen.matches("[-+]?[0-9]+")
-                                ? Integer.parseInt(origen)
-                                : cpu.obtenerRegistro(origen);
-                        cpu.asignarRegistro(destino, valor);
-                    }
-
-                    // MOV [n], REG, escritura en memoria
-                    else if (destino.startsWith("[")) {
-                        int desplazamiento = Integer.parseInt(destino.replaceAll("[\\[\\]]", ""));
-                        int direccion = -1;
-
-                        switch (modoMemoria.toUpperCase()) {
-                            // SEGMENTACIÓN
-                            case "SEGMENTACION" -> {
-                                direccion = procesoActual.bcp.baseDatos + desplazamiento;
-                                if (direccion < procesoActual.bcp.baseDatos || direccion > procesoActual.bcp.limiteDatos)
-                                    throw new RuntimeException("Violación de segmento en MOV");
-                            }
-
-                            // DINÁMICA
-                            case "DINAMICA" -> {
-                                direccion = procesoActual.bcp.baseCodigo + desplazamiento;
-                                if (direccion < procesoActual.bcp.baseCodigo || direccion > procesoActual.bcp.limiteCodigo)
-                                    throw new RuntimeException("Violación de bloque dinámico en MOV");
-                            }
-
-                            // VIRTUAL (paginación)
-                            case "VIRTUAL" -> {
-                                int tamanoPagina2 = memoria.tamanoPagina;
-                                int pagina = desplazamiento / tamanoPagina2;
-                                int offset = desplazamiento % tamanoPagina2;
-
-                                Integer basePagina = procesoActual.tablaPaginas.get(pagina);
-                                if (basePagina == null)
-                                    throw new RuntimeException("Fallo de página en MOV (página no asignada)");
-
-                                direccion = basePagina + offset;
-                            }
-
-                            default -> throw new RuntimeException("Modo de memoria no reconocido: " + modoMemoria);
-                        }
-
-                        String valor = String.valueOf(cpu.obtenerRegistro(origen));
-                        memoria.asignarCelda(direccion, valor);
-                        procesoActual.bcp.ultimoResultado = "Dir " + direccion + " = " + valor;
-                    } else {
-                        throw new RuntimeException("Sintaxis de MOV no válida: " + destino + ", " + origen);
-                    }
+                    int val = obtenerValorOperando(args.get(1));
+                    cpu.asignarRegistro(args.get(0), val);
                 }
-
-
+ 
                 case "LOAD" -> {
-                    String reg = args.get(0);
-                    int desplazamiento = cpu.obtenerRegistro(reg);
-                    int direccion = -1;
-
-                    switch (modoMemoria.toUpperCase()) {
-                        case "SEGMENTACION" -> {
-                            direccion = procesoActual.bcp.baseDatos + desplazamiento;
-                            if (direccion < procesoActual.bcp.baseDatos || direccion > procesoActual.bcp.limiteDatos)
-                                throw new RuntimeException("Violación de segmento de datos en LOAD");
-                        }
-
-                        case "DINAMICA" -> {
-                            direccion = procesoActual.bcp.baseCodigo + desplazamiento;
-                            if (direccion < procesoActual.bcp.baseCodigo || direccion > procesoActual.bcp.limiteCodigo)
-                                throw new RuntimeException("Violación de bloque dinámico en LOAD");
-                        }
-
-                        case "VIRTUAL" -> {
-                            int tamanoPagina2 = memoria.tamanoPagina;
-                            int pagina = desplazamiento / tamanoPagina2;
-                            int offset = desplazamiento % tamanoPagina2;
-
-                            Integer basePagina = procesoActual.tablaPaginas.get(pagina);
-                            if (basePagina == null)
-                                throw new RuntimeException("Fallo de página en LOAD (página no asignada)");
-
-                            direccion = basePagina + offset;
-                        }
-
-                        default -> throw new RuntimeException("Modo de memoria no reconocido: " + modoMemoria);
-                    }
-
-                    String valor = memoria.obtenerRaw(direccion);
-                    try {
-                        cpu.AC = Integer.parseInt(valor.trim());
-                    } catch (NumberFormatException e) {
-                        cpu.AC = 0;
-                    }
+                    cpu.AC = cpu.obtenerRegistro(args.get(0));
                     cpu.ZF = (cpu.AC == 0);
                 }
-
-
+ 
                 case "STORE" -> {
-                    int desplazamiento = cpu.obtenerRegistro(args.get(0));
-                    int direccion = -1;
-
-                    switch (modoMemoria.toUpperCase()) {
-                        case "SEGMENTACION" -> {
-                            direccion = procesoActual.bcp.baseDatos + desplazamiento;
-                            if (direccion < procesoActual.bcp.baseDatos || direccion > procesoActual.bcp.limiteDatos)
-                                throw new RuntimeException("Violación de segmento de datos en STORE");
-                        }
-
-                        case "DINAMICA" -> {
-                            direccion = procesoActual.bcp.baseCodigo + desplazamiento;
-                            if (direccion < procesoActual.bcp.baseCodigo || direccion > procesoActual.bcp.limiteCodigo)
-                                throw new RuntimeException("Violación de bloque dinámico en STORE");
-                        }
-
-                        case "VIRTUAL" -> {
-                            int tamanoPagina2 = memoria.tamanoPagina;
-                            int pagina = desplazamiento / tamanoPagina2;
-                            int offset = desplazamiento % tamanoPagina2;
-
-                            Integer basePagina = procesoActual.tablaPaginas.get(pagina);
-                            if (basePagina == null)
-                                throw new RuntimeException("Fallo de página en STORE (página no asignada)");
-
-                            direccion = basePagina + offset;
-                        }
-
-                        default -> throw new RuntimeException("Modo de memoria no reconocido: " + modoMemoria);
-                    }
-
+                    int direccion = procesoActual.bcp.baseDatos + cpu.obtenerRegistro(args.get(0));
                     String valor = String.valueOf(cpu.AC);
                     memoria.asignarCelda(direccion, valor);
-                    procesoActual.bcp.ultimoResultado = "STORE -> Dir " + direccion + " = " + valor;
+ 
+                    // Guardamos en el BCP
+                    procesoActual.bcp.ultimoResultado = "Dir " + direccion + " = " + valor;
                 }
 
 
@@ -1686,7 +1604,7 @@ public class VentanaSimulador extends JFrame {
             datos[i][0] = p.pid;
             datos[i][1] = p.archivo.getName();
             // Si aún no tiene tiempo asignado, sugerir uno incremental
-            datos[i][2] = (p.bcp.tiempoLlegada == 0) ? tiempoIncremental : p.bcp.tiempoLlegada;
+            datos[i][2] = (p.bcp.tiempoArribo == 0) ? tiempoIncremental : p.bcp.tiempoArribo;
             tiempoIncremental += 2; // Por defecto, los procesos caen en cada 2 unidades
         }
 
@@ -1716,7 +1634,7 @@ public class VentanaSimulador extends JFrame {
                     if (tLlegada < 0) throw new NumberFormatException();
 
                     Proceso p = listaProcesos.get(i);
-                    p.bcp.tiempoLlegada = tLlegada;
+                    p.bcp.tiempoArribo = tLlegada;
 
                 } catch (NumberFormatException ex) {
                     JOptionPane.showMessageDialog(this,
@@ -1735,7 +1653,7 @@ public class VentanaSimulador extends JFrame {
                         .append(" (")
                         .append(p.archivo.getName())
                         .append(") → Llegada: ")
-                        .append(p.bcp.tiempoLlegada)
+                        .append(p.bcp.tiempoArribo)
                         .append("\n");
             }
 
@@ -1750,12 +1668,24 @@ public class VentanaSimulador extends JFrame {
         if (numProc < 2) numProc = 2;
         if (numProc > 4) numProc = 4;
         this.numProcesadores = numProc;
+        int indiceCPU = 1;
+        int contador = 0;
+        CPU cp = new CPU();
+        cp.IDCPU = indiceCPU;
         cores.clear();
         int total = numProcesadores * coresPorProcesador;
         for (int i = 0; i < total; i++) {
-             Core core = new Core();
-             core.idCore = i+1;
+            if(contador == coresPorProcesador){
+                contador = 0;
+                ++indiceCPU;
+                cp = new CPU();
+                cp.IDCPU = indiceCPU;
+            }
+            Core core = new Core();
+            core.cpu = cp;
+            core.idCore = i+1;
             cores.add(core);
+            contador++;
         }
         // Actualiza UI si quieres mostrar cantidad de cores
     }
@@ -1789,6 +1719,37 @@ public class VentanaSimulador extends JFrame {
         tablaPaginacion.revalidate();
         tablaPaginacion.repaint();
     }
+    
+    private void actualizarTablaEstadoCPU() {
+        modeloEstadoCPU.setRowCount(0); // limpiar tabla
+
+        
+        for (Core core : cores) {
+            Proceso p = core.procesoActual;
+
+            if (p != null && p.bcp != null) {
+                modeloEstadoCPU.addRow(new Object[]{
+                    core.cpu.IDCPU,
+                    core.idCore,
+                    "P" + p.bcp.idProceso + "  " +p.bcp.nombre,
+                    p.bcp.estado,
+                    p.bcp.rafaga,
+                    p.bcp.tiempoArribo
+                });
+            } else {
+                modeloEstadoCPU.addRow(new Object[]{
+                    core.cpu.IDCPU,
+                    core.idCore,
+                    "-",
+                    "Libre",
+                    "-",
+                    "-"
+                });
+            }
+        }
+        
+    }
+
     /*
     private void actualizarMapaMemoria() {
         int marcos = memoria.getCantidadMarcos();

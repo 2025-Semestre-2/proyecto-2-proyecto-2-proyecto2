@@ -14,6 +14,7 @@ public class CPU {
     public enum Estado { LISTO, EJECUTANDO, TERMINADO, ERROR }
 
     public final Map<String,Integer> registros = new LinkedHashMap<>();
+    public int IDCPU;
     public int PC = 0;
     public int AC = 0;
     public boolean ZF = false;

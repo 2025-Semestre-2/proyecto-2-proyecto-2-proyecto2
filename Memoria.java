@@ -20,7 +20,7 @@ public class Memoria {
     private ArrayList<Particion> particiones = new ArrayList<>();
     private ArrayList<Integer> marcosLibres = new ArrayList<>();
     private String[] memoria;
-    private int tamanoParticion = 10; // Ajustable
+    private int tamanoParticion = 20; // Ajustable
     public int tamanoMarco = 5; //Ajustable
 
     // 🆕 Tamaño de página (para memoria virtual)
